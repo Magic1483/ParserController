@@ -2,9 +2,8 @@ package com.example.parsercontroller
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.Context
+
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,9 +25,13 @@ import kotlin.time.Duration
 import io.ktor.serialization.kotlinx.*
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import io.ktor.websocket.send
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
-
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 
 
 
@@ -46,9 +49,19 @@ data class PythonModule(
     val data: String
 )
 
-class WebsocketClient(ctx: Context,messages: SnapshotStateList<ConsoleMsg>) {
+
+enum class STATE {
+    OPEN,CLOSE
+}
+
+class WebsocketClient(ctx: Context) {
+//    val server_ip  = "ws://192.168.100.5:8750"
     val server_ip  = "ws://83.147.245.51:8760"
     val ctx = ctx
+    var status = STATE.CLOSE
+
+
+
     val client = HttpClient(CIO){
         install(WebSockets){
             pingIntervalMillis = 20_000
@@ -63,7 +76,7 @@ class WebsocketClient(ctx: Context,messages: SnapshotStateList<ConsoleMsg>) {
         val modules =
             listOf("utils.pyc","OzonCategory.pyc","OzonProduct.pyc","OzonProductHandler.pyc")
 
-
+        
         client.webSocket(server_ip){
             try {
                 for (f in modules){
@@ -88,10 +101,47 @@ class WebsocketClient(ctx: Context,messages: SnapshotStateList<ConsoleMsg>) {
         }
     }
 
+    fun stop(){
+        status = STATE.CLOSE
+        client.close()
+    }
 
-   suspend fun StartTask(task_name:String,testMode: Boolean)   {
+    suspend fun Test(){
+        status = STATE.OPEN
+        val bgService = BackgroundService.getInstance()
+        Log.i("TestWorker",server_ip.toString())
+        client.webSocket(server_ip){
+            try{
+                var try_count = 1
+                while (status == STATE.OPEN) {
+                    send("test request $try_count")
+                    bgService?.updateNotification("test request $try_count")
+                    try_count++
+                    var res = incoming.receive()
+                    var resultText = (res as Frame.Text).readText()
+
+                    Log.i("WebsocketClient",resultText.toString())
+                    Messages.AddMsg(resultText,"good")
+                    delay(5000)
+                }
+            } catch (e: Exception){
+                Log.e("WebsocketClient",e.toString())
+            }
+
+
+        }
+    }
+
+   suspend fun StartTask(task: String,testMode: Boolean)   {
         this.ImportModules()
-        val ns = NotificationService(this.ctx)
+        val bgService = BackgroundService.getInstance()
+
+        var task_name:String = ""
+        when (task){
+            "OZON_IMPORT" -> task_name = "import"
+            "OZON_UPDATE_STOCK" -> task_name = "update_price"
+            "OZON_UPDATE_PRICES" -> task_name = "update_stock"
+        }
 
         Log.i("StartTask",task_name.toString())
         client.webSocket(server_ip){
@@ -100,29 +150,28 @@ class WebsocketClient(ctx: Context,messages: SnapshotStateList<ConsoleMsg>) {
 
                 var res = incoming.receive()
                 var resultText = (res as Frame.Text).readText()
-                Log.i("info",resultText)
 
                 if (resultText == "started"){
-                    messages.add(ConsoleMsg("[$task_name] start","good"))
+                    Messages.AddMsg("[$task_name] $resultText","good")
                 } else {
-                    messages.add(ConsoleMsg("[$task_name] $resultText","bad"))
+                    Messages.AddMsg("[$task_name] $resultText","bad")
                 }
-
+                bgService?.updateNotification("[$task_name] $resultText")
 
                 res = incoming.receive()
                 resultText = (res as Frame.Text).readText()
                 val jsRes = Json.parseToJsonElement(resultText).jsonObject
                 Log.i("info",resultText)
-                ns.PushNotification(task_name+" "+jsRes["data"])
 
-                messages.add(ConsoleMsg("[$task_name]  "+jsRes["data"],"good"))
+                Messages.AddMsg("[$task_name] ${jsRes["data"]}","good")
+                bgService?.updateNotification("[$task_name] ${jsRes["data"]}")
 
-                client.close()
+//                client.close()
 
 
             } catch (e: Exception){
                 Log.e("ERR",e.toString())
-                messages.add(ConsoleMsg(e.toString(),"bad"))
+                Messages.AddMsg(e.toString(),"bad")
             }
         }
    }

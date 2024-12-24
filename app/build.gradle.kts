@@ -33,6 +33,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -54,7 +55,12 @@ dependencies {
     implementation("io.ktor:ktor-client-cio:3.0.2")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.2")
     implementation("io.ktor:ktor-server-content-negotiation:3.0.2")
+
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.work:work-runtime:2.1.0")
+    implementation("androidx.work:work-multiprocess")
+    implementation("androidx.work:work-runtime-ktx:2.8.0")
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

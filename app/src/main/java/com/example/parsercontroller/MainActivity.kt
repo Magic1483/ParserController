@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.DialogInterface
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.AsyncTask
 import android.os.Build
@@ -37,6 +38,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,52 +47,66 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.getSystemService
+import androidx.core.content.ContextCompat.startForegroundService
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.WorkRequest
+import androidx.work.Worker
+import androidx.work.workDataOf
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
-val ServiceOptions = listOf("Add to ozon","Update Stocks","Update Prices")
-var messages  = mutableStateListOf<ConsoleMsg>()
+var ServiceOptions = listOf(
+    BackgroundService.Actions.OZON_IMPORT,
+    BackgroundService.Actions.OZON_UPDATE_STOCK,
+    BackgroundService.Actions.OZON_UPDATE_PRICES,
+)
+
+
 //val ws = WebsocketClient()
 val REQUEST_CODE: Int = 100
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.e("TAG","test")
-        checkPerm()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU){
+            ActivityCompat.requestPermissions(this, arrayOf(
+                Manifest.permission.POST_NOTIFICATIONS
+            ),100)
+        }
 
-        
-        
         enableEdgeToEdge()
         setContent {
             Main(this)
         }
 
+
+
     }
 
 
 
-    private fun checkPerm() {
+    private fun checkPerm(permission: String) {
         if (
             ContextCompat.checkSelfPermission(
                 this,
-                Manifest.permission.POST_NOTIFICATIONS
+                permission
             ) == PackageManager.PERMISSION_GRANTED
         ) {
 
-        } else if (ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.POST_NOTIFICATIONS)){
+        } else if (ActivityCompat.shouldShowRequestPermissionRationale(this,permission)){
             val builder =  AlertDialog.Builder(this);
             builder.setMessage("This app requires POST_NOTIFICATION PERM")
                 .setTitle("Perm requets")
                 .setCancelable(false)
                 .setPositiveButton("OK",DialogInterface.OnClickListener { dialogInterface, i ->
                     ActivityCompat.requestPermissions(this,
-                        arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                        arrayOf(permission),
                         REQUEST_CODE)
                     dialogInterface.dismiss()
                 })
@@ -100,7 +116,7 @@ class MainActivity : ComponentActivity() {
             builder.show()
         } else {
             ActivityCompat.requestPermissions(this,
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                arrayOf(permission),
                 REQUEST_CODE)
         }
     }
@@ -108,16 +124,14 @@ class MainActivity : ComponentActivity() {
 
 }
 
-class ConsoleMsg(val msg: String, val type: String){
-
-}
+class ConsoleMsg(val msg: String, val type: String)
 
 
 
 @Composable
 fun Main(ctx: Context){
     var isTestMode by remember { mutableStateOf(false) }
-    
+
     Column(
         Modifier
             .padding(start = 8.dp, end = 8.dp, top = 30.dp)
@@ -129,7 +143,7 @@ fun Main(ctx: Context){
                 .verticalScroll(rememberScrollState())
                 .padding(all = 8.dp))
             {
-                messages.forEach {m ->
+                Messages.messages.forEach {m ->
                     MessageConsole(m)
                 }
             }
@@ -147,10 +161,19 @@ fun Main(ctx: Context){
             Column(modifier = Modifier.align(Alignment.End) ) {
                 Text("Options", style = MaterialTheme.typography.titleLarge)
                 Spacer(modifier = Modifier.height(4.dp))
+//                Button( onClick = {
+//                    Intent(ctx,BackgroundService::class.java).also {
+//                        it.action = BackgroundService.Actions.START.toString()
+//                        startForegroundService(ctx,it)
+//                    }
+//                }) { Text(text = "Start")}
+
+
                 for (el in ServiceOptions){
-                    Option(el,ctx, isTestMode)
+                    Option(el.toString(),ctx, isTestMode,el)
                 }
             }
+
         }
     }
 
@@ -163,32 +186,29 @@ fun Main(ctx: Context){
 @Composable
 fun MessageConsole(msg: ConsoleMsg){
     if (msg.type == "good"){
-        messages.plus(Text(text = msg.msg, color = Color(0xFF018786), style = MaterialTheme.typography.bodyLarge))
+        Text(text = msg.msg, color = Color(0xFF018786), style = MaterialTheme.typography.bodyLarge)
     } else {
-        messages.plus(Text(text = msg.msg, color = Color(0xFFB00020), style = MaterialTheme.typography.bodyLarge))
+        Text(text = msg.msg, color = Color(0xFFB00020), style = MaterialTheme.typography.bodyLarge)
     }
-
-    Log.i("DEBUG",messages.toString())
 
 }
 
 @Composable
-fun Option(text: String ,ctx: Context,testMode: Boolean){
-    Button( onClick = { HandleTask(text,ctx,testMode) }, modifier = Modifier.width(210.dp) ) {
+fun Option(text: String ,ctx: Context,testMode: Boolean,action: BackgroundService.Actions){
+    Button( onClick = { HandleTask(action,ctx,testMode) }, modifier = Modifier.width(210.dp) ) {
         Text(text)
     }
 }
 
 
-//https://needone.app/start-and-suspend-a-coroutine-in-kotlin/
-@OptIn(DelicateCoroutinesApi::class)
-fun HandleTask(name: String, ctx: Context,testMode: Boolean){
 
-    val ws = WebsocketClient(ctx, messages)
-    when (name){
-        "Add to ozon"   -> GlobalScope.launch { ws.StartTask("import",testMode) }
-        "Update Stocks"  -> GlobalScope.launch { ws.StartTask("update_stock",testMode) }
-        "Update Prices"  -> GlobalScope.launch { ws.StartTask("update_price",testMode) }
-   }
+
+//https://needone.app/start-and-suspend-a-coroutine-in-kotlin/
+fun HandleTask(action:BackgroundService.Actions, ctx: Context,testMode: Boolean){
+    Intent(ctx,BackgroundService::class.java).also {
+        it.action = action.toString()
+        it.putExtra("testMode",testMode)
+        startForegroundService(ctx,it)
+    }
 }
 
